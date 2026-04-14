@@ -1,4 +1,6 @@
 # livecontainer-webredirect-userscript
+[日本語版はこちら](README.ja.md)
+
 Userscript files for most major social media apps that when opened from the Safari browser, automatically redirects to the appropriate app within Livecontainer.
 
 # Prerequisites
