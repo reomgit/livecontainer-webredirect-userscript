@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube → LiveContainer (iOS)
 // @namespace    sharmanhall
-// @version      0.5
-// @description  Redirect YouTube links to LiveContainer so they open in the containerized YouTube app.
+// @version      0.6
+// @description  Redirect YouTube links to LiveContainer so they open directly in the containerized YouTube app.
 // @author       sharmanhall
 // @match        https://www.youtube.com/*
 // @match        https://youtube.com/*
@@ -25,6 +25,13 @@
   const AUTO_REDIRECT_ON_YOUTUBE_PAGES = true;  // when you're *on* a YouTube page
   const REWRITE_LINKS_ON_ALL_PAGES = true;      // rewrite <a> that point to YouTube anywhere
   const ADD_LC_FLAG = true;                     // append lc=1 to avoid bounce loops
+  // Route via the `youtube://` URL scheme so LiveContainer launches the
+  // containerized YouTube app directly. Sending the https URL instead would
+  // land in LiveContainer's in-app web view, whose WKWebView session is
+  // independent of the YouTube app's keychain auth — on cold launch that web
+  // view has no Google session and prompts for sign-in. Set this to false to
+  // fall back to the old web-view behavior.
+  const USE_NATIVE_APP_SCHEME = true;
 
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
@@ -43,6 +50,13 @@
     } catch { return false; }
   }
 
+  function isYouTubeMusicURL(u) {
+    try {
+      const url = (u instanceof URL) ? u : new URL(u, location.href);
+      return url.hostname === 'music.youtube.com' || url.hostname.endsWith('.music.youtube.com');
+    } catch { return false; }
+  }
+
   // Encode for LiveContainer's open-web-page scheme (expects Base64)
   function toBase64(str) {
     try {
@@ -52,10 +66,46 @@
     }
   }
 
-  function buildLcUrl(originalUrl) {
+  // Normalize to the form the YouTube iOS app accepts: www.youtube.com paths.
+  // youtu.be/<id> → www.youtube.com/watch?v=<id>; m./bare youtube.com → www.
+  function canonicalizeYouTube(originalUrl) {
     const url = new URL(originalUrl, location.href);
-    if (ADD_LC_FLAG && !url.searchParams.has('lc')) url.searchParams.set('lc', '1');
-    return `livecontainer://open-web-page?url=${toBase64(url.toString())}`;
+    const host = url.hostname.toLowerCase();
+
+    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+      const id = url.pathname.replace(/^\/+/, '').split('/')[0];
+      if (id) {
+        const out = new URL('https://www.youtube.com/watch');
+        for (const [k, v] of url.searchParams) {
+          if (k !== 'v') out.searchParams.set(k, v);
+        }
+        out.searchParams.set('v', id);
+        out.hash = url.hash;
+        return out;
+      }
+      url.hostname = 'www.youtube.com';
+      return url;
+    }
+
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      url.hostname = 'www.youtube.com';
+    }
+    return url;
+  }
+
+  function buildLcUrl(originalUrl) {
+    const canon = canonicalizeYouTube(originalUrl);
+    if (ADD_LC_FLAG && !canon.searchParams.has('lc')) canon.searchParams.set('lc', '1');
+
+    // Music URLs belong to the YouTube Music app, not YouTube — don't force
+    // them through youtube:// (the YouTube app won't route music.youtube.com
+    // paths correctly). Fall back to the web-view delivery for those.
+    const useAppScheme = USE_NATIVE_APP_SCHEME && !isYouTubeMusicURL(canon);
+    const target = useAppScheme
+      ? `youtube://${canon.host}${canon.pathname}${canon.search}${canon.hash}`
+      : canon.toString();
+
+    return `livecontainer://open-web-page?url=${toBase64(target)}`;
   }
 
   function redirectToLC(u) {
